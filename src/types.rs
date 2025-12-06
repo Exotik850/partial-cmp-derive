@@ -1,0 +1,375 @@
+//! Type definitions for darling attribute parsing.
+
+use darling::{
+    Error, FromDeriveInput, FromField, FromMeta, FromVariant, Result,
+    ast::{Data, Fields},
+    util::{Flag, SpannedValue},
+};
+use proc_macro2::Span;
+use syn::{Expr, Ident, Path, Type};
+
+/// The sort order for a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
+impl FromMeta for SortOrder {
+    fn from_string(value: &str) -> Result<Self> {
+        match value.to_lowercase().as_str() {
+            "asc" | "ascending" => Ok(SortOrder::Asc),
+            "desc" | "descending" => Ok(SortOrder::Desc),
+            other => Err(Error::unknown_value(other).with_span(&Span::call_site())),
+        }
+    }
+}
+
+/// Controls where `None` values sort relative to `Some` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoneOrder {
+    /// `None` sorts before all `Some` values
+    First,
+    /// `None` sorts after all `Some` values (default)
+    #[default]
+    Last,
+}
+
+impl FromMeta for NoneOrder {
+    fn from_string(value: &str) -> Result<Self> {
+        match value.to_lowercase().as_str() {
+            "first" => Ok(NoneOrder::First),
+            "last" => Ok(NoneOrder::Last),
+            other => Err(Error::unknown_value(other).with_span(&Span::call_site())),
+        }
+    }
+}
+
+/// A single entry in the `by = [...]` list.
+#[derive(Debug, Clone)]
+pub struct FieldOrderEntry {
+    pub ident: Ident,
+    pub order: SortOrder,
+}
+
+/// A list of field ordering entries parsed from `#[ord(by = [field1(asc), field2(desc)])]`.
+#[derive(Debug, Clone, Default)]
+pub struct FieldOrderList(pub Vec<FieldOrderEntry>);
+
+impl FromMeta for FieldOrderList {
+    fn from_expr(expr: &Expr) -> Result<Self> {
+        // Parse array expression: [field1(asc), field2(desc)]
+        let Expr::Array(array) = expr else {
+            return Err(
+                Error::custom("expected array syntax: [field1(asc), field2(desc)]").with_span(expr),
+            );
+        };
+
+        let mut entries = Vec::new();
+        let mut errors = Error::accumulator();
+
+        for elem in &array.elems {
+            match parse_field_order_entry(elem) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => errors.push(e),
+            }
+        }
+
+        errors.finish_with(FieldOrderList(entries))
+    }
+}
+
+/// Parses a single entry like `field(asc)` or `field(desc)`.
+fn parse_field_order_entry(expr: &Expr) -> Result<FieldOrderEntry> {
+    if let Expr::Path(path) = expr {
+        let ident = path
+            .path
+            .get_ident()
+            .cloned()
+            .ok_or_else(|| Error::custom("expected simple identifier").with_span(expr))?;
+        return Ok(FieldOrderEntry {
+            ident,
+            order: SortOrder::Asc,
+        });
+    }
+
+    let Expr::Call(call) = expr else {
+        return Err(Error::custom("expected field(asc) or field(desc) syntax").with_span(expr));
+    };
+
+    // Get the field name
+    let Expr::Path(path) = call.func.as_ref() else {
+        return Err(Error::custom("expected field name").with_span(&call.func));
+    };
+
+    let ident = path
+        .path
+        .get_ident()
+        .cloned()
+        .ok_or_else(|| Error::custom("expected simple identifier").with_span(&call.func))?;
+
+    // Get the order argument
+    if call.args.len() != 1 {
+        return Err(Error::custom("expected exactly one argument: asc or desc").with_span(expr));
+    }
+
+    let arg = &call.args[0];
+    let Expr::Path(order_path) = arg else {
+        return Err(Error::custom("expected asc or desc").with_span(arg));
+    };
+
+    let order_ident = order_path
+        .path
+        .get_ident()
+        .ok_or_else(|| Error::custom("expected asc or desc").with_span(arg))?;
+
+    let order = match order_ident.to_string().as_str() {
+        "asc" => SortOrder::Asc,
+        "desc" => SortOrder::Desc,
+        other => {
+            return Err(
+                Error::custom(format!("expected `asc` or `desc`, found `{other}`"))
+                    .with_span(arg),
+            );
+        }
+    };
+
+    Ok(FieldOrderEntry { ident, order })
+}
+
+/// Field-level attributes.
+#[derive(Debug, Clone, FromField)]
+#[darling(attributes(ord))]
+pub struct OrdField {
+    /// The field identifier (None for tuple struct fields).
+    pub ident: Option<Ident>,
+
+    /// The field type.
+    pub ty: Type,
+
+    /// Skip this field from comparison.
+    #[darling(default)]
+    pub skip: Flag,
+
+    /// Sort order for this field.
+    #[darling(default)]
+    pub order: Option<SortOrder>,
+
+    /// Priority for comparison ordering (lower = compared first).
+    #[darling(default)]
+    pub priority: Option<SpannedValue<i32>>,
+
+    /// Custom comparison function path.
+    #[darling(default)]
+    pub compare_with: Option<SpannedValue<Path>>,
+
+    /// How to handle None values for Option fields.
+    #[darling(default)]
+    pub none_order: Option<NoneOrder>,
+}
+
+impl OrdField {
+    /// Returns the effective sort order, defaulting to Asc.
+    pub fn effective_order(&self) -> SortOrder {
+        self.order.unwrap_or_default()
+    }
+
+    /// Returns the effective priority for sorting fields.
+    pub fn effective_priority(&self) -> i32 {
+        self.priority.as_ref().map_or(i32::MAX, |p| **p)
+    }
+}
+
+/// Variant-level attributes for enums.
+#[derive(Debug, Clone, FromVariant)]
+#[darling(attributes(ord))]
+pub struct OrdVariant {
+    /// The variant identifier.
+    pub ident: Ident,
+
+    /// The variant's fields.
+    pub fields: Fields<OrdField>,
+
+    /// Explicit rank for this variant (lower = less than).
+    #[darling(default)]
+    pub rank: Option<SpannedValue<i32>>,
+}
+
+impl OrdVariant {
+    /// Returns the effective rank for sorting variants.
+    /// If an explicit rank is set, use it; otherwise use the declaration index.
+    pub fn effective_rank(&self, declaration_index: usize) -> i32 {
+        self.rank
+            .as_ref()
+            .map_or(declaration_index as i32, |r| **r)
+    }
+}
+
+/// Top-level derive input.
+#[derive(Debug, Clone, FromDeriveInput)]
+#[darling(attributes(ord), supports(struct_any, enum_any))]
+pub struct OrdDerive {
+    /// The type identifier.
+    pub ident: Ident,
+
+    /// Generic parameters.
+    pub generics: syn::Generics,
+
+    /// The data (struct fields or enum variants).
+    pub data: Data<OrdVariant, OrdField>,
+
+    /// Reverse the entire comparison result.
+    #[darling(default)]
+    pub reverse: Flag,
+
+    /// Explicit field ordering.
+    #[darling(default, rename = "by")]
+    pub field_order: Option<FieldOrderList>,
+}
+
+impl OrdDerive {
+    /// Validates the derive input and returns accumulated errors.
+    pub fn validate(&self) -> Result<()> {
+        let mut errors = Error::accumulator();
+
+        match &self.data {
+            Data::Struct(fields) => {
+                self.validate_struct_fields(fields, &mut errors);
+            }
+            Data::Enum(variants) => {
+                self.validate_enum_variants(variants, &mut errors);
+            }
+        }
+
+        errors.finish()
+    }
+
+    fn validate_struct_fields(
+        &self,
+        fields: &Fields<OrdField>,
+        errors: &mut darling::error::Accumulator,
+    ) {
+        // Check for conflicts between field_order and field-level attributes
+        if let Some(ref order_list) = self.field_order {
+            let ordered_names: std::collections::HashSet<_> =
+                order_list.0.iter().map(|e| e.ident.to_string()).collect();
+
+            for field in fields.iter() {
+                if let Some(ref ident) = field.ident {
+                    let name = ident.to_string();
+
+                    // Check for priority on fields when explicit ordering is used
+                    if field.priority.is_some() && ordered_names.contains(&name) {
+                        errors.push(
+                            Error::custom(
+                                "cannot use `priority` on fields when `by` is specified at struct level",
+                            )
+                            .with_span(ident),
+                        );
+                    }
+
+                    // Check for order on fields when explicit ordering is used
+                    if field.order.is_some() && ordered_names.contains(&name) {
+                        errors.push(
+                            Error::custom(
+                                "cannot use `order` on fields listed in `by`; specify order in the `by` list instead",
+                            )
+                            .with_span(ident),
+                        );
+                    }
+                }
+            }
+
+            // Check that all fields in order_list exist
+            let field_names: std::collections::HashSet<_> = fields
+                .iter()
+                .filter_map(|f| f.ident.as_ref().map(std::string::ToString::to_string))
+                .collect();
+
+            for entry in &order_list.0 {
+                if !field_names.contains(&entry.ident.to_string()) {
+                    errors.push(
+                        Error::custom(format!("unknown field `{}`", entry.ident))
+                            .with_span(&entry.ident),
+                    );
+                }
+            }
+        }
+
+        // Check for conflicting skip and other attributes
+        for field in fields.iter() {
+            if field.skip.is_present() {
+                if field.order.is_some() {
+                    errors.push(
+                        Error::custom("cannot use `order` on skipped fields")
+                            .with_span(&field.skip.span()),
+                    );
+                }
+                if field.priority.is_some() {
+                    errors.push(
+                        Error::custom("cannot use `priority` on skipped fields")
+                            .with_span(&field.skip.span()),
+                    );
+                }
+                if field.compare_with.is_some() {
+                    errors.push(
+                        Error::custom("cannot use `compare_with` on skipped fields")
+                            .with_span(&field.skip.span()),
+                    );
+                }
+                if field.none_order.is_some() {
+                    errors.push(
+                        Error::custom("cannot use `none_order` on skipped fields")
+                            .with_span(&field.skip.span()),
+                    );
+                }
+            }
+        }
+    }
+
+    fn validate_enum_variants(
+        &self,
+        variants: &[OrdVariant],
+        errors: &mut darling::error::Accumulator,
+    ) {
+        // Check for duplicate ranks
+        let mut ranks: std::collections::HashMap<i32, &Ident> = std::collections::HashMap::new();
+
+        for variant in variants {
+            if let Some(ref rank) = variant.rank {
+                let rank_value = **rank;
+                if let Some(existing) = ranks.get(&rank_value) {
+                    errors.push(
+                        Error::custom(format!(
+                            "duplicate rank {rank_value} (also used by `{existing}`)"
+                        ))
+                        .with_span(&variant.ident),
+                    );
+                } else {
+                    ranks.insert(rank_value, &variant.ident);
+                }
+            }
+        }
+
+        // Validate fields within each variant
+        for variant in variants {
+            for field in variant.fields.iter() {
+                if field.skip.is_present()
+                    && field.order.is_some() {
+                        errors.push(
+                            Error::custom("cannot use `order` on skipped fields")
+                                .with_span(&field.skip.span()),
+                        );
+                    }
+            }
+        }
+
+        // Check that field_order is not used with enums
+        if self.field_order.is_some() {
+            errors.push(
+                Error::custom("`by` attribute is not supported on enums").with_span(&self.ident),
+            );
+        }
+    }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "partial-cmp-derive"
+version = "0.1.0"
+edition = "2024"
+authors = ["@exotik850"]
+description = "Derive PartialOrd and Ord with fine-grained control over field comparison"
+license = "MIT"
+repository = "https://github.com/exotik850/partial-cmp-derive"
+documentation = "https://docs.rs/partial-cmp-derive"
+keywords = ["derive", "ord", "partialord", "comparison", "proc-macro"]
+categories = ["development-tools::procedural-macro-helpers", "rust-patterns"]
+readme = "README.md"
+
+
+[dependencies]
+darling = "0.23"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = "2.0"
+
+
+[lib]
+proc-macro = true
