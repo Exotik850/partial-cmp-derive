@@ -9,9 +9,6 @@ use crate::types::{FieldOrderList, NoneOrder, OrdDerive, OrdField, OrdVariant, S
 
 /// Expands the derive macro into `PartialOrd` and Ord implementations.
 pub fn expand_derive(input: &OrdDerive) -> Result<TokenStream> {
-    // Validate input first
-    input.validate()?;
-
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -92,7 +89,9 @@ fn build_explicit_order_comparisons(
             // Find the field index for the field
             let field_index = fields
                 .iter()
-                .position(|f| f.ident.as_ref().map(std::string::ToString::to_string) == Some(name.clone()))
+                .position(|f| {
+                    f.ident.as_ref().map(std::string::ToString::to_string) == Some(name.clone())
+                })
                 .unwrap_or(0);
             let cmp = build_single_field_comparison(field, Some(entry.order), field_index)?;
             comparisons.push(cmp);
@@ -136,7 +135,9 @@ fn build_single_field_comparison(
 ) -> Result<TokenStream> {
     let order = order_override.unwrap_or_else(|| field.effective_order());
 
-    let field_access = if let Some(ident) = &field.ident { quote! { #ident } } else {
+    let field_access = if let Some(ident) = &field.ident {
+        quote! { #ident }
+    } else {
         // Tuple struct field - use numeric index
         let idx = syn::Index::from(field_index);
         quote! { #idx }
@@ -248,9 +249,6 @@ fn build_enum_match_arms(
     let mut arms = Vec::new();
 
     for variant in variants {
-        let variant_name = &variant.ident;
-        let self_rank = variant_ranks[&variant_name.to_string()];
-
         // Build pattern and field bindings
         let (self_pattern, other_pattern, field_cmp) =
             build_variant_patterns_and_cmp(enum_name, variant)?;
@@ -312,22 +310,6 @@ fn build_discriminant_fn(
             quote! {
                 #enum_name::#variant_name { #out } => #rank
             }
-
-            // let pattern = match &v.fields {
-            //     Fields::Unit => quote! { #enum_name::#variant_name },
-            //     Fields::Tuple(fields) => {
-            //         let underscores: Vec<_> = fields.iter().map(|_| quote! { _ }).collect();
-            //         quote! { #enum_name::#variant_name(#(#underscores),*) }
-            //     }
-            //     Fields::Named(fields) => {
-            //         let underscores: Vec<TokenStream> = fields
-            //             .iter()
-            //             .filter_map(|f| f.ident.as_ref())
-            //             .map(|i| quote! { #i: _ })
-            //             .collect();
-            //         quote! { #enum_name::#variant_name { #(#underscores),* } }
-            //     }
-            // };
         })
         .collect();
 
@@ -359,10 +341,7 @@ fn build_variant_patterns_and_cmp(
     }
 
     // Determine if this is a tuple variant (fields have no idents) or named variant
-    let is_tuple = fields
-        .iter()
-        .next()
-        .is_some_and(|f| f.ident.is_none());
+    let is_tuple = fields.iter().next().is_some_and(|f| f.ident.is_none());
 
     if is_tuple {
         // Tuple variant
@@ -395,16 +374,14 @@ fn build_variant_patterns_and_cmp(
             .map(|i| format_ident!("__other_{}", i))
             .collect();
 
-        let self_renames: Vec<TokenStream> = field_idents
+        let self_renames = field_idents
             .iter()
             .zip(&self_bindings)
-            .map(|(orig, binding)| quote! { #orig: #binding })
-            .collect();
-        let other_renames: Vec<TokenStream> = field_idents
+            .map(|(orig, binding)| quote! { #orig: #binding });
+        let other_renames = field_idents
             .iter()
             .zip(&other_bindings)
-            .map(|(orig, binding)| quote! { #orig: #binding })
-            .collect();
+            .map(|(orig, binding)| quote! { #orig: #binding });
 
         let self_pattern = quote! { #enum_name::#variant_name { #(#self_renames),* } };
         let other_pattern = quote! { #enum_name::#variant_name { #(#other_renames),* } };

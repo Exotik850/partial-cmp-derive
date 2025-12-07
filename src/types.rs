@@ -5,7 +5,6 @@ use darling::{
     ast::{Data, Fields},
     util::{Flag, SpannedValue},
 };
-use proc_macro2::Span;
 use syn::{Expr, Ident, Path, Type};
 
 /// The sort order for a field.
@@ -21,7 +20,7 @@ impl FromMeta for SortOrder {
         match value.to_lowercase().as_str() {
             "asc" | "ascending" => Ok(SortOrder::Asc),
             "desc" | "descending" => Ok(SortOrder::Desc),
-            other => Err(Error::unknown_value(other).with_span(&Span::call_site())),
+            other => Err(Error::unknown_value(other)),
         }
     }
 }
@@ -41,7 +40,7 @@ impl FromMeta for NoneOrder {
         match value.to_lowercase().as_str() {
             "first" => Ok(NoneOrder::First),
             "last" => Ok(NoneOrder::Last),
-            other => Err(Error::unknown_value(other).with_span(&Span::call_site())),
+            other => Err(Error::unknown_value(other)),
         }
     }
 }
@@ -70,13 +69,23 @@ impl FromMeta for FieldOrderList {
         let mut errors = Error::accumulator();
 
         for elem in &array.elems {
-            match parse_field_order_entry(elem) {
-                Ok(entry) => entries.push(entry),
-                Err(e) => errors.push(e),
-            }
+            errors
+                .handle(parse_field_order_entry(elem))
+                .map(|entry| entries.push(entry));
         }
 
         errors.finish_with(FieldOrderList(entries))
+    }
+}
+
+fn get_ident_from_expr(expr: &Expr) -> Result<Ident> {
+    if let Expr::Path(path) = expr {
+        path.path
+            .get_ident()
+            .cloned()
+            .ok_or_else(|| Error::custom("expected simple identifier").with_span(expr))
+    } else {
+        Err(Error::custom("expected identifier").with_span(expr))
     }
 }
 
@@ -99,15 +108,7 @@ fn parse_field_order_entry(expr: &Expr) -> Result<FieldOrderEntry> {
     };
 
     // Get the field name
-    let Expr::Path(path) = call.func.as_ref() else {
-        return Err(Error::custom("expected field name").with_span(&call.func));
-    };
-
-    let ident = path
-        .path
-        .get_ident()
-        .cloned()
-        .ok_or_else(|| Error::custom("expected simple identifier").with_span(&call.func))?;
+    let ident = get_ident_from_expr(&call.func)?;
 
     // Get the order argument
     if call.args.len() != 1 {
@@ -115,22 +116,14 @@ fn parse_field_order_entry(expr: &Expr) -> Result<FieldOrderEntry> {
     }
 
     let arg = &call.args[0];
-    let Expr::Path(order_path) = arg else {
-        return Err(Error::custom("expected asc or desc").with_span(arg));
-    };
-
-    let order_ident = order_path
-        .path
-        .get_ident()
-        .ok_or_else(|| Error::custom("expected asc or desc").with_span(arg))?;
+    let order_ident = get_ident_from_expr(arg)?;
 
     let order = match order_ident.to_string().as_str() {
         "asc" => SortOrder::Asc,
         "desc" => SortOrder::Desc,
         other => {
             return Err(
-                Error::custom(format!("expected `asc` or `desc`, found `{other}`"))
-                    .with_span(arg),
+                Error::custom(format!("expected `asc` or `desc`, found `{other}`")).with_span(arg),
             );
         }
     };
@@ -145,7 +138,8 @@ pub struct OrdField {
     /// The field identifier (None for tuple struct fields).
     pub ident: Option<Ident>,
 
-    /// The field type.
+    /// The field type (magic field populated by darling for future use).
+    #[allow(dead_code)]
     pub ty: Type,
 
     /// Skip this field from comparison.
@@ -153,19 +147,15 @@ pub struct OrdField {
     pub skip: Flag,
 
     /// Sort order for this field.
-    #[darling(default)]
     pub order: Option<SortOrder>,
 
     /// Priority for comparison ordering (lower = compared first).
-    #[darling(default)]
     pub priority: Option<SpannedValue<i32>>,
 
     /// Custom comparison function path.
-    #[darling(default)]
     pub compare_with: Option<SpannedValue<Path>>,
 
     /// How to handle None values for Option fields.
-    #[darling(default)]
     pub none_order: Option<NoneOrder>,
 }
 
@@ -200,15 +190,13 @@ impl OrdVariant {
     /// Returns the effective rank for sorting variants.
     /// If an explicit rank is set, use it; otherwise use the declaration index.
     pub fn effective_rank(&self, declaration_index: usize) -> i32 {
-        self.rank
-            .as_ref()
-            .map_or(declaration_index as i32, |r| **r)
+        self.rank.as_ref().map_or(declaration_index as i32, |r| **r)
     }
 }
 
 /// Top-level derive input.
 #[derive(Debug, Clone, FromDeriveInput)]
-#[darling(attributes(ord), supports(struct_any, enum_any))]
+#[darling(attributes(ord), supports(struct_any, enum_any), and_then = Self::validate)]
 pub struct OrdDerive {
     /// The type identifier.
     pub ident: Ident,
@@ -230,7 +218,7 @@ pub struct OrdDerive {
 
 impl OrdDerive {
     /// Validates the derive input and returns accumulated errors.
-    pub fn validate(&self) -> Result<()> {
+    fn validate(self) -> Result<Self> {
         let mut errors = Error::accumulator();
 
         match &self.data {
@@ -242,7 +230,7 @@ impl OrdDerive {
             }
         }
 
-        errors.finish()
+        errors.finish_with(self)
     }
 
     fn validate_struct_fields(
@@ -355,13 +343,12 @@ impl OrdDerive {
         // Validate fields within each variant
         for variant in variants {
             for field in variant.fields.iter() {
-                if field.skip.is_present()
-                    && field.order.is_some() {
-                        errors.push(
-                            Error::custom("cannot use `order` on skipped fields")
-                                .with_span(&field.skip.span()),
-                        );
-                    }
+                if field.skip.is_present() && field.order.is_some() {
+                    errors.push(
+                        Error::custom("cannot use `order` on skipped fields")
+                            .with_span(&field.skip.span()),
+                    );
+                }
             }
         }
 
