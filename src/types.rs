@@ -69,9 +69,9 @@ impl FromMeta for FieldOrderList {
         let mut errors = Error::accumulator();
 
         for elem in &array.elems {
-            errors
-                .handle(parse_field_order_entry(elem))
-                .map(|entry| entries.push(entry));
+            if let Some(entry) = errors.handle(parse_field_order_entry(elem)) {
+                entries.push(entry);
+            }
         }
 
         errors.finish_with(FieldOrderList(entries))
@@ -210,6 +210,10 @@ pub struct OrdDerive {
     /// Reverse the entire comparison result.
     #[darling(default)]
     pub reverse: Flag,
+
+    /// Skip eq / ord implementation.
+    #[darling(default)]
+    pub skip_ord: Flag,
 
     /// Explicit field ordering.
     #[darling(default, rename = "by")]

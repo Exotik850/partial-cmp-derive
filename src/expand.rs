@@ -7,6 +7,18 @@ use syn::Ident;
 
 use crate::types::{FieldOrderList, NoneOrder, OrdDerive, OrdField, OrdVariant, SortOrder};
 
+/// Checks if any field in the struct or enum has the `skip` attribute.
+/// When fields are skipped, we only implement PartialOrd (not Ord) because
+/// skipped fields may contain types that don't implement Ord or Eq.
+fn has_skipped_fields(input: &OrdDerive) -> bool {
+    match &input.data {
+        darling::ast::Data::Struct(fields) => fields.iter().any(|f| f.skip.is_present()),
+        darling::ast::Data::Enum(variants) => variants
+            .iter()
+            .any(|v| v.fields.iter().any(|f| f.skip.is_present())),
+    }
+}
+
 /// Expands the derive macro into `PartialOrd` and Ord implementations.
 pub fn expand_derive(input: &OrdDerive) -> Result<TokenStream> {
     let name = &input.ident;
@@ -28,6 +40,20 @@ pub fn expand_derive(input: &OrdDerive) -> Result<TokenStream> {
     } else {
         cmp_body
     };
+
+    // Skip Ord implementation if skip_ord is set OR if any fields are skipped.
+    // Skipped fields may contain types that don't implement Ord or Eq,
+    // so we can only safely implement PartialOrd.
+    if input.skip_ord.is_present() || has_skipped_fields(input) {
+        return Ok(quote! {
+            impl #impl_generics ::core::cmp::PartialOrd for #name #ty_generics #where_clause {
+                #[inline]
+                fn partial_cmp(&self, other: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+                    ::core::option::Option::Some(#final_cmp)
+                }
+            }
+        });
+    }
 
     Ok(quote! {
         impl #impl_generics ::core::cmp::PartialOrd for #name #ty_generics #where_clause {

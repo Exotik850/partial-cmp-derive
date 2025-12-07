@@ -21,7 +21,9 @@ fn test_basic_struct_default_ordering() {
 
 #[test]
 fn test_skip_field() {
-    #[derive(Debug, PartialEq, Eq, PartialCmp)]
+    // When fields are skipped, only PartialOrd is implemented (not Ord)
+    // because skipped fields may contain types that don't implement Ord/Eq
+    #[derive(Debug, PartialEq, PartialCmp)]
     struct Player {
         #[ord(skip)]
         id: u64,
@@ -36,7 +38,7 @@ fn test_skip_field() {
     let c = Player { id: 1, score: 200 };
 
     // id is ignored, only score matters
-    assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+    assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Equal));
     assert!(a < c);
 }
 
@@ -190,4 +192,65 @@ fn test_tuple_struct() {
 
     assert!(a < b); // First field desc: 10 > 5, so a < b
     assert!(a < c); // First equal, second asc: 1 < 2
+}
+
+#[test]
+fn test_skip_field_non_ord_type() {
+    // Test that skip alone allows using types that don't implement Ord (like f32)
+    // without needing skip_ord at the struct level
+    #[derive(Debug, PartialEq, PartialCmp)]
+    struct WithFloat {
+        #[ord(skip)]
+        value: f32, // f32 doesn't implement Ord, but it's skipped
+        priority: u32,
+    }
+
+    let a = WithFloat {
+        value: 1.5,
+        priority: 10,
+    };
+    let b = WithFloat {
+        value: 2.5,
+        priority: 20,
+    };
+    let c = WithFloat {
+        value: 3.5,
+        priority: 10,
+    };
+
+    // Only priority is compared, value is skipped
+    assert!(a < b);
+    assert_eq!(a.partial_cmp(&c), Some(std::cmp::Ordering::Equal));
+}
+
+#[test]
+fn test_skip_field_tuple_non_ord_type() {
+    // Test skip on tuple struct with f32
+    #[derive(Debug, PartialEq, PartialCmp)]
+    struct FloatPair(#[ord(skip)] f32, u32);
+
+    let a = FloatPair(1.5, 10);
+    let b = FloatPair(2.5, 20);
+    let c = FloatPair(3.5, 10);
+
+    assert!(a < b);
+    assert_eq!(a.partial_cmp(&c), Some(std::cmp::Ordering::Equal));
+}
+
+#[test]
+fn test_skip_ord_explicit() {
+    // Test that skip_ord can be explicitly set even without skipped fields
+    // This is useful when you want only PartialOrd for other reasons
+    #[derive(Debug, PartialEq, PartialCmp)]
+    #[ord(skip_ord)]
+    struct Score {
+        value: u32,
+    }
+
+    let a = Score { value: 10 };
+    let b = Score { value: 20 };
+
+    assert!(a < b);
+    assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Less));
+    // Note: Ord is not implemented, so a.cmp(&b) would not compile
 }
