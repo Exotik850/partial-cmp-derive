@@ -80,7 +80,7 @@ use crate::types::OrdDerive;
 ///     score: u32,
 /// }
 /// ```
-#[proc_macro_derive(PartialCmpDerive, attributes(ord))]
+#[proc_macro_derive(PartialCmp, attributes(ord))]
 pub fn partial_cmp_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 

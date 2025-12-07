@@ -1,10 +1,10 @@
-//! Integration tests for PartialCmpDerive
+//! Integration tests for PartialCmp
 
-use partial_cmp_derive::PartialCmpDerive;
+use partial_cmp_derive::PartialCmp;
 
 #[test]
 fn test_basic_struct_default_ordering() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     struct Point {
         x: i32,
         y: i32,
@@ -21,7 +21,7 @@ fn test_basic_struct_default_ordering() {
 
 #[test]
 fn test_skip_field() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     struct Player {
         #[ord(skip)]
         id: u64,
@@ -42,7 +42,7 @@ fn test_skip_field() {
 
 #[test]
 fn test_descending_order() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     struct HighScore {
         #[ord(order = "desc")]
         score: u32,
@@ -64,7 +64,7 @@ fn test_descending_order() {
 
 #[test]
 fn test_explicit_field_order() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     #[ord(by = [priority(desc), created_at])]
     struct Task {
         id: u64,      // Not compared
@@ -99,7 +99,7 @@ fn test_explicit_field_order() {
 
 #[test]
 fn test_priority_attribute() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     struct Item {
         #[ord(priority = 1)]
         secondary: u32,
@@ -122,7 +122,7 @@ fn test_priority_attribute() {
 
 #[test]
 fn test_reverse_all() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     #[ord(reverse)]
     struct Score(u32);
 
@@ -135,7 +135,7 @@ fn test_reverse_all() {
 
 #[test]
 fn test_enum_basic() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     enum Status {
         Pending,
         InProgress,
@@ -148,7 +148,7 @@ fn test_enum_basic() {
 
 #[test]
 fn test_enum_custom_rank() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     enum Priority {
         #[ord(rank = 2)]
         Low,
@@ -165,7 +165,7 @@ fn test_enum_custom_rank() {
 
 #[test]
 fn test_enum_with_fields() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     enum Event {
         Click { x: i32, y: i32 },
         KeyPress { code: u32 },
@@ -181,7 +181,7 @@ fn test_enum_with_fields() {
 
 #[test]
 fn test_tuple_struct() {
-    #[derive(Debug, PartialEq, Eq, PartialCmpDerive)]
+    #[derive(Debug, PartialEq, Eq, PartialCmp)]
     struct Pair(#[ord(order = "desc")] u32, u32);
 
     let a = Pair(10, 1);
