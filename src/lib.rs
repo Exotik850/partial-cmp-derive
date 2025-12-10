@@ -1,46 +1,69 @@
 //! # partial-cmp-derive
 //!
-//! A procedural macro crate for deriving `PartialOrd` and `Ord` with fine-grained
-//! control over field comparison behavior.
+//! A procedural macro crate for deriving `PartialEq`, `Eq`, `PartialOrd`, and `Ord`
+//! with fine-grained control over field comparison behavior.
 //!
 //! ## Features
 //!
-//! - **Skip fields**: Use `#[ord(skip)]` to exclude fields from comparison.
-//!   When any field is skipped, only `PartialOrd` is implemented (not `Ord`),
-//!   allowing skipped fields to contain types that don't implement `Ord` or `Eq` (like `f32`).
+//! - **Skip fields**: Use `#[ord(skip)]` to exclude fields from all comparisons.
+//!   Skipped fields are ignored in both equality and ordering checks.
 //! - **Sort order**: Use `#[ord(order = "asc")]` or `#[ord(order = "desc")]` per field
 //! - **Explicit ordering**: Use `#[ord(by = [field1(desc), field2(asc)])]` at struct level
 //! - **Field priority**: Use `#[ord(priority = N)]` for implicit ordering (lower = first)
-//! - **Custom comparators**: Use `#[ord(compare_with = "path::to::fn")]`
+//! - **Custom comparators**: Use `#[ord(compare_with = "path::to::fn")]` for ordering
+//! - **Custom equality**: Use `#[ord(eq_with = "path::to::fn")]` for equality checks
 //! - **Reverse all**: Use `#[ord(reverse)]` at struct level to reverse entire comparison
 //! - **Enum ranking**: Use `#[ord(rank = N)]` to control variant ordering
 //! - **Option handling**: Use `#[ord(none_order = "first")]` or `"last"`
-//! - **Skip Ord**: Use `#[ord(skip_ord)]` to only implement `PartialOrd` without `Ord`
+//! - **Trait selection**: Control which traits are generated with skip flags
+//!
+//! ## Trait Generation
+//!
+//! By default, all four comparison traits are generated: `PartialEq`, `Eq`,
+//! `PartialOrd`, and `Ord`. You can opt out of specific traits:
+//!
+//! - `#[ord(skip_partial_eq)]` — Don't generate `PartialEq` (implies no other traits)
+//! - `#[ord(skip_eq)]` — Don't generate `Eq` (implies no `Ord`)
+//! - `#[ord(skip_partial_ord)]` — Don't generate `PartialOrd` (implies no `Ord`)
+//! - `#[ord(skip_ord)]` — Don't generate `Ord`
 //!
 //! ## Example
 //!
 //! ```rust
 //! use partial_cmp_derive::PartialCmp;
 //!
-//! // When no fields are skipped, both PartialOrd and Ord are implemented
-//! #[derive(PartialEq, Eq, PartialCmp)]
+//! // Generates PartialEq, Eq, PartialOrd, and Ord
+//! #[derive(PartialCmp)]
 //! struct Point {
 //!     x: i32,
 //!     y: i32,
 //! }
 //!
-//! // When fields are skipped, only PartialOrd is implemented
-//! // This allows using types like f32 that don't implement Ord
-//! #[derive(Debug, PartialEq, PartialCmp)]
+//! // Skipped fields are excluded from all comparisons
+//! // Use skip_eq and skip_ord when non-skipped fields don't implement Eq/Ord
+//! #[derive(Debug, PartialCmp)]
+//! #[ord(skip_eq, skip_ord)]
 //! struct Measurement {
 //!     #[ord(skip)]
-//!     raw_value: f32,  // f32 doesn't implement Ord, but it's skipped
+//!     raw_value: f32,  // Ignored in eq and cmp
 //!     timestamp: u64,
+//! }
+//!
+//! // Only generate PartialEq and PartialOrd (for types like f32)
+//! #[derive(Debug, PartialCmp)]
+//! #[ord(skip_eq, skip_ord)]
+//! struct PartialOnly {
+//!     #[ord(compare_with = "cmp_f32")]
+//!     value: f32,
+//! }
+//!
+//! fn cmp_f32(a: &f32, b: &f32) -> std::cmp::Ordering {
+//!     a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
 //! }
 //! ```
 //!
-//! This generates `PartialOrd` (and `Ord` when no fields are skipped) implementations
-//! that compare fields in the specified order, ignoring skipped fields entirely.
+//! This generates consistent implementations where skipped fields are ignored
+//! in both equality and ordering comparisons.
 
 mod expand;
 mod types;
@@ -52,43 +75,70 @@ use syn::{DeriveInput, parse_macro_input};
 use crate::expand::expand_derive;
 use crate::types::OrdDerive;
 
-/// Derives `PartialOrd` and `Ord` with customizable field comparison behavior.
+/// Derives comparison traits with customizable field behavior.
+///
+/// By default, this macro generates implementations for `PartialEq`, `Eq`,
+/// `PartialOrd`, and `Ord`. All traits respect the same field configuration,
+/// ensuring consistent behavior.
 ///
 /// # Struct-Level Attributes
 ///
 /// - `#[ord(reverse)]` — Reverses the final comparison result
 /// - `#[ord(by = [field1(asc), field2(desc)])]` — Explicit field comparison order
-/// - `#[ord(skip_ord)]` — Only implement `PartialOrd`, not `Ord`
+/// - `#[ord(skip_partial_eq)]` — Don't generate `PartialEq` (disables all other traits too)
+/// - `#[ord(skip_eq)]` — Don't generate `Eq` (also disables `Ord`)
+/// - `#[ord(skip_partial_ord)]` — Don't generate `PartialOrd` (also disables `Ord`)
+/// - `#[ord(skip_ord)]` — Don't generate `Ord`
 ///
 /// # Field-Level Attributes
 ///
-/// - `#[ord(skip)]` — Exclude this field from comparison. **Note:** When any field
-///   is skipped, only `PartialOrd` is implemented (not `Ord`), allowing skipped
-///   fields to contain types that don't implement `Ord` or `Eq` (like `f32`).
+/// - `#[ord(skip)]` — Exclude this field from all comparisons (both eq and ord)
 /// - `#[ord(order = "asc")]` or `#[ord(order = "desc")]` — Sort direction
 /// - `#[ord(priority = N)]` — Comparison priority (lower = compared first)
-/// - `#[ord(compare_with = "path::to::fn")]` — Custom comparison function
+/// - `#[ord(compare_with = "path::to::fn")]` — Custom comparison function for ordering
+///   (signature: `fn(&T, &T) -> Ordering`)
+/// - `#[ord(eq_with = "path::to::fn")]` — Custom equality function
+///   (signature: `fn(&T, &T) -> bool`)
 /// - `#[ord(none_order = "first")]` or `#[ord(none_order = "last")]` — Option handling
 ///
 /// # Variant-Level Attributes (Enums)
 ///
 /// - `#[ord(rank = N)]` — Explicit variant ranking (lower = less than)
 ///
-/// # Requirements
+/// # Custom Comparison Functions
 ///
-/// - The type must also derive or implement `PartialEq` (and `Eq` if `Ord` is generated)
-/// - All compared fields must implement `Ord` (or provide `compare_with`)
-/// - Skipped fields have no trait requirements
+/// When using `compare_with`, you can optionally provide `eq_with` for a custom
+/// equality check. If `eq_with` is not provided, equality is derived from the
+/// comparison function (equal when `compare_with` returns `Ordering::Equal`).
+///
+/// ```rust
+/// use partial_cmp_derive::PartialCmp;
+/// use std::cmp::Ordering;
+///
+/// fn cmp_abs(a: &i32, b: &i32) -> Ordering {
+///     a.abs().cmp(&b.abs())
+/// }
+///
+/// fn eq_abs(a: &i32, b: &i32) -> bool {
+///     a.abs() == b.abs()
+/// }
+///
+/// #[derive(PartialCmp)]
+/// struct AbsValue {
+///     #[ord(compare_with = "cmp_abs", eq_with = "eq_abs")]
+///     value: i32,
+/// }
+/// ```
 ///
 /// # Example
 ///
 /// ```rust
 /// use partial_cmp_derive::PartialCmp;
 ///
-/// #[derive(PartialEq, Eq, PartialCmp)]
+/// #[derive(Debug, PartialCmp)]
 /// #[ord(by = [score(desc), name(asc)])]
 /// struct Player {
-///     id: u64,  // Not compared (not in `by` list)
+///     id: u64,      // Not compared (not in `by` list)
 ///     name: String,
 ///     score: u32,
 /// }
