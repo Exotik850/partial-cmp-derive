@@ -1,9 +1,9 @@
 [package]
 name = "partial-cmp-derive"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 authors = ["@exotik850"]
-description = "Derive PartialOrd and Ord with fine-grained control over field comparison"
+description = "Derive PartialEq, Eq, PartialOrd, and Ord with fine-grained control over field comparison"
 license = "MIT"
 repository = "https://github.com/exotik850/partial-cmp-derive"
 documentation = "https://docs.rs/partial-cmp-derive"

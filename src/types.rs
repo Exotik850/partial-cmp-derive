@@ -142,7 +142,7 @@ pub struct OrdField {
     #[allow(dead_code)]
     pub ty: Type,
 
-    /// Skip this field from comparison.
+    /// Skip this field from comparison entirely.
     #[darling(default)]
     pub skip: Flag,
 
@@ -152,8 +152,12 @@ pub struct OrdField {
     /// Priority for comparison ordering (lower = compared first).
     pub priority: Option<SpannedValue<i32>>,
 
-    /// Custom comparison function path.
+    /// Custom comparison function path for Ord (returns Ordering).
     pub compare_with: Option<SpannedValue<Path>>,
+
+    /// Custom equality function path for PartialEq (returns bool).
+    /// If not specified but compare_with is, equality is derived from compare_with.
+    pub eq_with: Option<SpannedValue<Path>>,
 
     /// How to handle None values for Option fields.
     pub none_order: Option<NoneOrder>,
@@ -194,6 +198,31 @@ impl OrdVariant {
     }
 }
 
+/// Configuration for which traits to generate.
+#[derive(Debug, Clone, Default)]
+pub struct TraitConfig {
+    /// Generate PartialEq implementation.
+    pub partial_eq: bool,
+    /// Generate Eq implementation.
+    pub eq: bool,
+    /// Generate PartialOrd implementation.
+    pub partial_ord: bool,
+    /// Generate Ord implementation.
+    pub ord: bool,
+}
+
+impl TraitConfig {
+    /// Creates a config with all traits enabled.
+    pub fn all() -> Self {
+        Self {
+            partial_eq: true,
+            eq: true,
+            partial_ord: true,
+            ord: true,
+        }
+    }
+}
+
 /// Top-level derive input.
 #[derive(Debug, Clone, FromDeriveInput)]
 #[darling(attributes(ord), supports(struct_any, enum_any), and_then = Self::validate)]
@@ -211,7 +240,19 @@ pub struct OrdDerive {
     #[darling(default)]
     pub reverse: Flag,
 
-    /// Skip eq / ord implementation.
+    /// Skip PartialEq implementation.
+    #[darling(default)]
+    pub skip_partial_eq: Flag,
+
+    /// Skip Eq implementation.
+    #[darling(default)]
+    pub skip_eq: Flag,
+
+    /// Skip PartialOrd implementation.
+    #[darling(default)]
+    pub skip_partial_ord: Flag,
+
+    /// Skip Ord implementation.
     #[darling(default)]
     pub skip_ord: Flag,
 
@@ -221,6 +262,39 @@ pub struct OrdDerive {
 }
 
 impl OrdDerive {
+    /// Returns the configuration for which traits to generate.
+    pub fn trait_config(&self) -> TraitConfig {
+        // Start with all traits enabled
+        let mut config = TraitConfig::all();
+
+        // Apply explicit skip flags
+        if self.skip_partial_eq.is_present() {
+            config.partial_eq = false;
+            // Without PartialEq, we can't have Eq, PartialOrd, or Ord
+            config.eq = false;
+            config.partial_ord = false;
+            config.ord = false;
+        }
+
+        if self.skip_eq.is_present() {
+            config.eq = false;
+            // Without Eq, we can't have Ord
+            config.ord = false;
+        }
+
+        if self.skip_partial_ord.is_present() {
+            config.partial_ord = false;
+            // Without PartialOrd, we can't have Ord
+            config.ord = false;
+        }
+
+        if self.skip_ord.is_present() {
+            config.ord = false;
+        }
+
+        config
+    }
+
     /// Validates the derive input and returns accumulated errors.
     fn validate(self) -> Result<Self> {
         let mut errors = Error::accumulator();
@@ -292,30 +366,14 @@ impl OrdDerive {
         // Check for conflicting skip and other attributes
         for field in fields.iter() {
             if field.skip.is_present() {
-                if field.order.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `order` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
-                if field.priority.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `priority` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
-                if field.compare_with.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `compare_with` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
-                if field.none_order.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `none_order` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
+                check_skipped(field, errors);
+            }
+
+            if field.eq_with.is_some() && field.compare_with.is_none() {
+                errors.push(
+                    Error::custom("`eq_with` requires `compare_with` to be set")
+                        .with_span(&field.eq_with.as_ref().unwrap().span()),
+                );
             }
         }
     }
@@ -347,11 +405,8 @@ impl OrdDerive {
         // Validate fields within each variant
         for variant in variants {
             for field in variant.fields.iter() {
-                if field.skip.is_present() && field.order.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `order` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
+                if field.skip.is_present() {
+                    check_skipped(field, errors);
                 }
             }
         }
@@ -360,6 +415,24 @@ impl OrdDerive {
         if self.field_order.is_some() {
             errors.push(
                 Error::custom("`by` attribute is not supported on enums").with_span(&self.ident),
+            );
+        }
+    }
+}
+
+fn check_skipped(field: &OrdField, errors: &mut darling::error::Accumulator) {
+    let fields = [
+        ("order", field.order.is_some()),
+        ("priority", field.priority.is_some()),
+        ("compare_with", field.compare_with.is_some()),
+        ("eq_with", field.eq_with.is_some()),
+        ("none_order", field.none_order.is_some()),
+    ];
+    for (name, attr) in fields {
+        if attr {
+            errors.push(
+                Error::custom(format!("cannot use `{name}` on skipped fields"))
+                    .with_span(&field.skip.span()),
             );
         }
     }
