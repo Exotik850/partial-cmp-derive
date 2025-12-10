@@ -366,36 +366,28 @@ impl OrdDerive {
         // Check for conflicting skip and other attributes
         for field in fields.iter() {
             if field.skip.is_present() {
-                if field.order.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `order` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
+                let fields = [
+                    ("order", field.order.is_some()),
+                    ("priority", field.priority.is_some()),
+                    ("compare_with", field.compare_with.is_some()),
+                    ("eq_with", field.eq_with.is_some()),
+                    ("none_order", field.none_order.is_some()),
+                ];
+                for (name, attr) in fields {
+                    if attr {
+                        errors.push(
+                            Error::custom(format!("cannot use `{name}` on skipped fields"))
+                                .with_span(&field.skip.span()),
+                        );
+                    }
                 }
-                if field.priority.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `priority` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
-                if field.compare_with.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `compare_with` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
-                if field.eq_with.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `eq_with` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
-                if field.none_order.is_some() {
-                    errors.push(
-                        Error::custom("cannot use `none_order` on skipped fields")
-                            .with_span(&field.skip.span()),
-                    );
-                }
+            }
+
+            if field.eq_with.is_some() && field.compare_with.is_none() {
+                errors.push(
+                    Error::custom("`eq_with` requires `compare_with` to be set")
+                        .with_span(&field.eq_with.as_ref().unwrap().span()),
+                );
             }
         }
     }
