@@ -1,7 +1,17 @@
+#![allow(dead_code)]
 //! Integration tests for PartialCmp
 
 use partial_cmp_derive::PartialCmp;
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// Helper function to compute the hash of a value.
+fn compute_hash<T: Hash>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
 
 //=============================================================================
 // Basic Struct Tests
@@ -235,22 +245,18 @@ fn test_reverse_all() {
 }
 
 //=============================================================================
-// Custom Comparison Function Tests
+// Key Extraction Tests
 //=============================================================================
 
-fn cmp_abs(a: &i32, b: &i32) -> Ordering {
-    a.abs().cmp(&b.abs())
-}
-
-fn eq_abs(a: &i32, b: &i32) -> bool {
-    a.abs() == b.abs()
+fn abs_key(v: &i32) -> i32 {
+    v.abs()
 }
 
 #[test]
-fn test_compare_with() {
+fn test_key_extraction() {
     #[derive(Debug, PartialCmp)]
     struct AbsValue {
-        #[ord(compare_with = "cmp_abs")]
+        #[ord(key = "abs_key")]
         value: i32,
     }
 
@@ -259,35 +265,20 @@ fn test_compare_with() {
     let c = AbsValue { value: 10 };
 
     // -5 and 5 have the same absolute value
-    assert_eq!(a, b); // Equality derived from compare_with
+    assert_eq!(a, b); // Equality derived from key
     assert!(a < c);
     assert!(b < c);
 }
 
-#[test]
-fn test_eq_with() {
-    #[derive(Debug, PartialCmp)]
-    struct AbsValue {
-        #[ord(compare_with = "cmp_abs", eq_with = "eq_abs")]
-        value: i32,
-    }
-
-    let a = AbsValue { value: -5 };
-    let b = AbsValue { value: 5 };
-
-    assert_eq!(a, b);
-    assert!(eq_abs(&a.value, &b.value));
-}
-
-fn cmp_len(a: &str, b: &str) -> Ordering {
-    a.len().cmp(&b.len())
+fn str_len(s: &String) -> usize {
+    s.len()
 }
 
 #[test]
-fn test_compare_with_references() {
+fn test_key_with_references() {
     #[derive(Debug, PartialCmp)]
     struct LenCompare {
-        #[ord(compare_with = "cmp_len")]
+        #[ord(key = "str_len")]
         text: String,
     }
 
@@ -514,6 +505,32 @@ fn test_skip_partial_ord_and_ord() {
     // Note: partial_cmp and cmp would not compile
 }
 
+#[test]
+fn test_skip_key_combination() {
+    fn abs_key(v: &i32) -> i32 {
+        v.abs()
+    }
+
+    #[derive(Debug, PartialCmp)]
+    struct AbsSkip {
+        #[ord(skip)]
+        id: u64,
+        #[ord(key = "abs_key")]
+        value: i32,
+    }
+
+    let a = AbsSkip { id: 1, value: -5 };
+    let b = AbsSkip { id: 2, value: 5 };
+    let c = AbsSkip { id: 3, value: 10 };
+
+    // a and b are equal (same abs value), id is skipped
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+
+    // a and c are not equal
+    assert_ne!(a, c);
+}
+
 //=============================================================================
 // Complex Scenarios
 //=============================================================================
@@ -554,7 +571,7 @@ fn test_multiple_attributes() {
 #[test]
 fn test_generic_struct() {
     #[derive(Debug, PartialCmp)]
-    struct Wrapper<T: Eq + Ord> {
+    struct Wrapper<T: Eq + Ord + Hash> {
         value: T,
     }
 
@@ -624,6 +641,9 @@ fn test_consistency_between_eq_and_ord() {
     // And vice versa
     assert!(a == b);
     assert!(a.cmp(&b) == Ordering::Equal);
+
+    // Also verify hash consistency
+    assert_eq!(compute_hash(&a), compute_hash(&b));
 }
 
 #[test]
@@ -636,6 +656,7 @@ fn test_empty_struct() {
 
     assert_eq!(a, b);
     assert_eq!(a.cmp(&b), Ordering::Equal);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
 }
 
 #[test]
@@ -650,4 +671,275 @@ fn test_single_field() {
 
     assert!(a < b);
     assert_eq!(a, Single { value: 5 });
+    assert_eq!(compute_hash(&a), compute_hash(&Single { value: 5 }));
+}
+
+//=============================================================================
+// Hash Implementation Tests
+//=============================================================================
+
+#[test]
+fn test_hash_basic_struct() {
+    #[derive(Debug, PartialCmp)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 1, y: 2 };
+    let c = Point { x: 1, y: 3 };
+
+    // Equal values must have equal hashes
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+
+    // Different values may have different hashes (not guaranteed, but likely)
+    assert_ne!(a, c);
+}
+
+#[test]
+fn test_hash_with_skip() {
+    #[derive(Debug, PartialCmp)]
+    struct Player {
+        #[ord(skip)]
+        id: u64,
+        score: u32,
+    }
+
+    let a = Player { id: 1, score: 100 };
+    let b = Player {
+        id: 999,
+        score: 100,
+    };
+    let c = Player { id: 1, score: 200 };
+
+    // a and b are equal (id is skipped), so hashes must be equal
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+
+    // a and c are not equal
+    assert_ne!(a, c);
+}
+
+#[test]
+fn test_hash_explicit_field_order() {
+    #[derive(Debug, PartialCmp)]
+    #[ord(by = [priority, created_at])]
+    struct Task {
+        id: u64,      // Not compared or hashed
+        name: String, // Not compared or hashed
+        priority: u8,
+        created_at: u64,
+    }
+
+    let a = Task {
+        id: 1,
+        name: "A".into(),
+        priority: 1,
+        created_at: 100,
+    };
+    let b = Task {
+        id: 999,
+        name: "Different".into(),
+        priority: 1,
+        created_at: 100,
+    };
+
+    // Equal because only priority and created_at are compared
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+}
+
+#[test]
+fn test_hash_with_key() {
+    fn abs_key(v: &i32) -> i32 {
+        v.abs()
+    }
+
+    #[derive(Debug, PartialCmp)]
+    struct AbsValue {
+        #[ord(key = "abs_key")]
+        value: i32,
+    }
+
+    let a = AbsValue { value: -5 };
+    let b = AbsValue { value: 5 };
+    let c = AbsValue { value: 10 };
+
+    // -5 and 5 have the same absolute value, so they're equal
+    assert_eq!(a, b);
+    // And their hashes must be equal (key is used consistently for Eq and Hash)
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+
+    // 10 is different
+    assert_ne!(a, c);
+}
+
+#[test]
+fn test_hash_enum() {
+    #[derive(Debug, PartialCmp)]
+    enum Status {
+        Pending,
+        InProgress,
+        Completed,
+    }
+
+    let a = Status::Pending;
+    let b = Status::Pending;
+    let c = Status::Completed;
+
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+    assert_ne!(a, c);
+}
+
+#[test]
+fn test_hash_enum_with_fields() {
+    #[derive(Debug, PartialCmp)]
+    enum Event {
+        Click { x: i32, y: i32 },
+        KeyPress { code: u32 },
+    }
+
+    let a = Event::Click { x: 10, y: 20 };
+    let b = Event::Click { x: 10, y: 20 };
+    let c = Event::Click { x: 10, y: 30 };
+    let d = Event::KeyPress { code: 65 };
+
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+
+    assert_ne!(a, c);
+    assert_ne!(a, d);
+}
+
+#[test]
+fn test_hash_enum_with_skip() {
+    #[derive(Debug, PartialCmp)]
+    enum Tagged {
+        Value {
+            #[ord(skip)]
+            tag: String,
+            data: i32,
+        },
+    }
+
+    let a = Tagged::Value {
+        tag: "first".into(),
+        data: 10,
+    };
+    let b = Tagged::Value {
+        tag: "second".into(),
+        data: 10,
+    };
+
+    // Equal because tag is skipped
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+}
+
+#[test]
+fn test_hash_tuple_struct() {
+    #[derive(Debug, PartialCmp)]
+    struct Pair(u32, u32);
+
+    let a = Pair(1, 2);
+    let b = Pair(1, 2);
+    let c = Pair(1, 3);
+
+    assert_eq!(a, b);
+    assert_eq!(compute_hash(&a), compute_hash(&b));
+    assert_ne!(a, c);
+}
+
+#[test]
+fn test_hash_none_order() {
+    #[derive(Debug, PartialCmp)]
+    struct MaybeValue {
+        #[ord(none_order = "first")]
+        value: Option<i32>,
+    }
+
+    let none1 = MaybeValue { value: None };
+    let none2 = MaybeValue { value: None };
+    let some1 = MaybeValue { value: Some(5) };
+    let some2 = MaybeValue { value: Some(5) };
+
+    assert_eq!(none1, none2);
+    assert_eq!(compute_hash(&none1), compute_hash(&none2));
+
+    assert_eq!(some1, some2);
+    assert_eq!(compute_hash(&some1), compute_hash(&some2));
+
+    assert_ne!(none1, some1);
+}
+
+#[test]
+fn test_skip_hash() {
+    // This test verifies that skip_hash prevents Hash from being generated
+    // We can't easily test that Hash is NOT implemented, but we can test
+    // that the struct works without Hash bounds
+
+    #[derive(Debug, PartialCmp)]
+    #[ord(skip_hash)]
+    struct NoHash {
+        value: i32,
+    }
+
+    let a = NoHash { value: 5 };
+    let b = NoHash { value: 5 };
+
+    // PartialEq and Eq still work
+    assert_eq!(a, b);
+
+    // Note: compute_hash(&a) would fail to compile because Hash is not implemented
+    // That's the expected behavior when skip_hash is used
+}
+
+#[test]
+fn test_hash_all_fields_skipped() {
+    #[derive(Debug, PartialCmp)]
+    struct AllSkipped {
+        #[ord(skip)]
+        a: i32,
+        #[ord(skip)]
+        b: String,
+    }
+
+    let x = AllSkipped {
+        a: 1,
+        b: "hello".into(),
+    };
+    let y = AllSkipped {
+        a: 999,
+        b: "world".into(),
+    };
+
+    // All fields skipped, so everything is equal
+    assert_eq!(x, y);
+    // And hashes must be equal
+    assert_eq!(compute_hash(&x), compute_hash(&y));
+}
+
+#[test]
+fn test_no_ord_no_hash() {
+    #[derive(Debug, PartialCmp)]
+    #[ord(skip_eq)]
+    struct EqOnly {
+        value: i32,
+    }
+
+    let a = EqOnly { value: 5 };
+    let b = EqOnly { value: 5 };
+    let c = EqOnly { value: 10 };
+
+    // PartialEq and PartialOrd work
+    assert_eq!(a, b);
+    assert!(a < c);
+    assert_ne!(a, c);
+
+    // Note: a.cmp(&b) and compute_hash(&a) would not compile
+    // That's the expected behavior when skip_ord and skip_hash are used
+    // assert_eq!(compute_hash(&a), compute_hash(&b));
 }

@@ -4,7 +4,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use crate::types::{FieldOrderList, NoneOrder, OrdDerive, OrdField, OrdVariant, SortOrder};
+use crate::types::{
+    FieldOrderList, NoneOrder, OrdDerive, OrdField, OrdVariant, SortOrder, TraitConfig,
+};
 
 //=============================================================================
 // Field Access Abstraction
@@ -80,6 +82,18 @@ pub fn expand_derive(input: &OrdDerive) -> TokenStream {
         output.extend(ord_impl);
     }
 
+    if config.hash {
+        let hash_impl = expand_hash(
+            input,
+            name,
+            &impl_generics,
+            &ty_generics,
+            where_clause,
+            &config,
+        );
+        output.extend(hash_impl);
+    }
+
     output
 }
 
@@ -137,12 +151,9 @@ fn generate_named_bindings(prefix: &str, idents: &[&Ident]) -> Vec<Ident> {
 fn build_eq_check(field: &OrdField, access: &FieldAccess) -> TokenStream {
     let (self_ref, other_ref) = access.as_refs();
 
-    if let Some(ref eq_with) = field.eq_with {
-        let path = eq_with.as_ref();
-        quote! { #path(#self_ref, #other_ref) }
-    } else if let Some(ref compare_with) = field.compare_with {
-        let path = compare_with.as_ref();
-        quote! { #path(#self_ref, #other_ref) == ::core::cmp::Ordering::Equal }
+    if let Some(ref key) = field.key {
+        let path = key.as_ref();
+        quote! { #path(#self_ref) == #path(#other_ref) }
     } else if field.none_order.is_some() {
         build_option_eq(access)
     } else {
@@ -156,9 +167,9 @@ fn build_eq_check(field: &OrdField, access: &FieldAccess) -> TokenStream {
 fn build_cmp_check(field: &OrdField, access: &FieldAccess, order: SortOrder) -> TokenStream {
     let (self_ref, other_ref) = access.as_refs();
 
-    let base_cmp = if let Some(ref compare_with) = field.compare_with {
-        let path = compare_with.as_ref();
-        quote! { #path(#self_ref, #other_ref) }
+    let base_cmp = if let Some(ref key) = field.key {
+        let path = key.as_ref();
+        quote! { ::core::cmp::Ord::cmp(&#path(#self_ref), &#path(#other_ref)) }
     } else if let Some(none_order) = field.none_order {
         build_option_cmp(access, none_order)
     } else {
@@ -343,6 +354,202 @@ fn build_variant_eq_arm(enum_name: &Ident, variant: &OrdVariant) -> TokenStream 
         });
     let eq_expr = chain_eq_checks(checks);
     quote! { (#self_pat, #other_pat) => { #eq_expr } }
+}
+
+//=============================================================================
+// Hash Implementation
+//=============================================================================
+
+fn expand_hash(
+    input: &OrdDerive,
+    name: &Ident,
+    impl_generics: &syn::ImplGenerics,
+    ty_generics: &syn::TypeGenerics,
+    where_clause: Option<&syn::WhereClause>,
+    config: &TraitConfig,
+) -> TokenStream {
+    let hash_body = match &input.data {
+        darling::ast::Data::Struct(fields) => {
+            if let Some(ref order_list) = input.field_order {
+                build_explicit_order_hash(order_list, &fields.fields, config)
+            } else {
+                build_implicit_hash(&fields.fields, config)
+            }
+        }
+        darling::ast::Data::Enum(variants) => expand_enum_hash(name, variants, config),
+    };
+
+    quote! {
+        #[automatically_derived]
+        impl #impl_generics ::core::hash::Hash for #name #ty_generics #where_clause {
+            #[inline]
+            fn hash<__H: ::core::hash::Hasher>(&self, state: &mut __H) {
+                #hash_body
+            }
+        }
+    }
+}
+
+/// Builds hash contribution for a single field.
+fn build_hash_contribution(
+    field: &OrdField,
+    access: &FieldAccess,
+    _config: &TraitConfig,
+) -> TokenStream {
+    let (self_ref, _) = access.as_refs();
+
+    if let Some(ref key) = field.key {
+        let path = key.as_ref();
+        quote! { ::core::hash::Hash::hash(&#path(#self_ref), state); }
+    } else if field.none_order.is_some() {
+        build_option_hash(access)
+    } else {
+        quote! { ::core::hash::Hash::hash(#self_ref, state); }
+    }
+}
+
+/// Builds Option hash with consistent handling.
+fn build_option_hash(access: &FieldAccess) -> TokenStream {
+    let self_expr = access.self_expr();
+    quote! {
+        match &#self_expr {
+            ::core::option::Option::None => {
+                ::core::hash::Hash::hash(&0u8, state);
+            }
+            ::core::option::Option::Some(__val) => {
+                ::core::hash::Hash::hash(&1u8, state);
+                ::core::hash::Hash::hash(__val, state);
+            }
+        }
+    }
+}
+
+fn build_explicit_order_hash(
+    order_list: &FieldOrderList,
+    fields: &[OrdField],
+    config: &TraitConfig,
+) -> TokenStream {
+    let field_map: std::collections::HashMap<Ident, (usize, &OrdField)> = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| f.ident.as_ref().map(|id| (id.clone(), (i, f))))
+        .collect();
+
+    let hash_stmts: Vec<_> = order_list
+        .0
+        .iter()
+        .filter_map(|entry| {
+            field_map.get(&entry.ident).map(|&(idx, field)| {
+                let access = field_access(field, idx);
+                build_hash_contribution(field, &FieldAccess::StructField(&access), config)
+            })
+        })
+        .collect();
+
+    quote! { #(#hash_stmts)* }
+}
+
+fn build_implicit_hash(fields: &[OrdField], config: &TraitConfig) -> TokenStream {
+    let hash_stmts: Vec<_> = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            if field.skip.is_present() {
+                None
+            } else {
+                let access = field_access(field, idx);
+                Some(build_hash_contribution(
+                    field,
+                    &FieldAccess::StructField(&access),
+                    config,
+                ))
+            }
+        })
+        .collect();
+
+    quote! { #(#hash_stmts)* }
+}
+
+fn expand_enum_hash(
+    enum_name: &Ident,
+    variants: &[OrdVariant],
+    config: &TraitConfig,
+) -> TokenStream {
+    if variants.is_empty() {
+        return quote! {};
+    }
+
+    let match_arms: Vec<_> = variants
+        .iter()
+        .map(|v| build_variant_hash_arm(enum_name, v, config))
+        .collect();
+
+    quote! {
+        ::core::hash::Hash::hash(&::core::mem::discriminant(self), state);
+        match self {
+            #(#match_arms,)*
+        }
+    }
+}
+
+fn build_variant_hash_arm(
+    enum_name: &Ident,
+    variant: &OrdVariant,
+    config: &TraitConfig,
+) -> TokenStream {
+    let variant_name = &variant.ident;
+    let fields = &variant.fields;
+
+    if fields.is_empty() {
+        return quote! { #enum_name::#variant_name => {} };
+    }
+
+    let is_tuple = fields.iter().next().is_some_and(|f| f.ident.is_none());
+
+    if is_tuple {
+        let bindings = generate_bindings("self", fields.len());
+        let pattern = quote! { #enum_name::#variant_name(#(#bindings),*) };
+
+        let hash_stmts: Vec<_> = fields
+            .iter()
+            .zip(bindings.iter())
+            .filter(|(f, _)| !f.skip.is_present())
+            .map(|(field, binding)| {
+                let access = FieldAccess::Bindings {
+                    self_id: binding,
+                    other_id: binding, // Not used for hashing
+                };
+                build_hash_contribution(field, &access, config)
+            })
+            .collect();
+
+        quote! { #pattern => { #(#hash_stmts)* } }
+    } else {
+        let field_idents: Vec<_> = fields.iter().filter_map(|f| f.ident.as_ref()).collect();
+        let bindings = generate_named_bindings("self", &field_idents);
+
+        let renames = field_idents
+            .iter()
+            .zip(&bindings)
+            .map(|(orig, binding)| quote! { #orig: #binding });
+
+        let pattern = quote! { #enum_name::#variant_name { #(#renames),* } };
+
+        let hash_stmts: Vec<_> = fields
+            .iter()
+            .zip(bindings.iter())
+            .filter(|(f, _)| !f.skip.is_present())
+            .map(|(field, binding)| {
+                let access = FieldAccess::Bindings {
+                    self_id: binding,
+                    other_id: binding, // Not used for hashing
+                };
+                build_hash_contribution(field, &access, config)
+            })
+            .collect();
+
+        quote! { #pattern => { #(#hash_stmts)* } }
+    }
 }
 
 //=============================================================================

@@ -152,12 +152,10 @@ pub struct OrdField {
     /// Priority for comparison ordering (lower = compared first).
     pub priority: Option<SpannedValue<i32>>,
 
-    /// Custom comparison function path for Ord (returns Ordering).
-    pub compare_with: Option<SpannedValue<Path>>,
-
-    /// Custom equality function path for `PartialEq` (returns bool).
-    /// If not specified but `compare_with` is, equality is derived from `compare_with`.
-    pub eq_with: Option<SpannedValue<Path>>,
+    /// Key extraction function path for comparison and hashing.
+    /// The function should have signature `fn(&T) -> U`.
+    /// The extracted key is used for `Eq`, `Ord`, and `Hash` implementations.
+    pub key: Option<SpannedValue<Path>>,
 
     /// How to handle None values for Option fields.
     pub none_order: Option<NoneOrder>,
@@ -172,6 +170,26 @@ impl OrdField {
     /// Returns the effective priority for sorting fields.
     pub fn effective_priority(&self) -> i32 {
         self.priority.as_ref().map_or(i32::MAX, |p| **p)
+    }
+
+    pub fn check_skipped(&self, errors: &mut darling::error::Accumulator) {
+        if !self.skip.is_present() {
+            return;
+        }
+        let fields = [
+            ("order", self.order.is_some()),
+            ("priority", self.priority.is_some()),
+            ("key", self.key.is_some()),
+            ("none_order", self.none_order.is_some()),
+        ];
+        for (name, attr) in fields {
+            if attr {
+                errors.push(
+                    Error::custom(format!("cannot use `{name}` on skipped fields"))
+                        .with_span(&self.skip.span()),
+                );
+            }
+        }
     }
 }
 
@@ -209,6 +227,8 @@ pub struct TraitConfig {
     pub partial_ord: bool,
     /// Generate Ord implementation.
     pub ord: bool,
+    /// Generate Hash implementation.
+    pub hash: bool,
 }
 
 impl TraitConfig {
@@ -219,6 +239,7 @@ impl TraitConfig {
             eq: true,
             partial_ord: true,
             ord: true,
+            hash: true,
         }
     }
 }
@@ -256,9 +277,13 @@ pub struct OrdDerive {
     #[darling(default)]
     pub skip_ord: Flag,
 
+    /// Skip Hash implementation.
+    #[darling(default)]
+    pub skip_hash: Flag,
+
     /// Explicit field ordering.
     #[darling(default, rename = "by")]
-    pub field_order: Option<FieldOrderList>,
+    pub field_order: Option<SpannedValue<FieldOrderList>>,
 }
 
 impl OrdDerive {
@@ -278,8 +303,9 @@ impl OrdDerive {
 
         if self.skip_eq.is_present() {
             config.eq = false;
-            // Without Eq, we can't have Ord
+            // Without Eq, we can't have Ord or Hash
             config.ord = false;
+            config.hash = false;
         }
 
         if self.skip_partial_ord.is_present() {
@@ -290,6 +316,10 @@ impl OrdDerive {
 
         if self.skip_ord.is_present() {
             config.ord = false;
+        }
+
+        if self.skip_hash.is_present() {
+            config.hash = false;
         }
 
         config
@@ -348,13 +378,11 @@ impl OrdDerive {
             }
 
             // Check that all fields in order_list exist
-            let field_names: std::collections::HashSet<_> = fields
-                .iter()
-                .filter_map(|f| f.ident.as_ref().map(std::string::ToString::to_string))
-                .collect();
+            let field_names: std::collections::HashSet<_> =
+                fields.iter().filter_map(|f| f.ident.clone()).collect();
 
             for entry in &order_list.0 {
-                if !field_names.contains(&entry.ident.to_string()) {
+                if !field_names.contains(&entry.ident) {
                     errors.push(
                         Error::custom(format!("unknown field `{}`", entry.ident))
                             .with_span(&entry.ident),
@@ -365,16 +393,7 @@ impl OrdDerive {
 
         // Check for conflicting skip and other attributes
         for field in fields.iter() {
-            if field.skip.is_present() {
-                check_skipped(field, errors);
-            }
-
-            if field.eq_with.is_some() && field.compare_with.is_none() {
-                errors.push(
-                    Error::custom("`eq_with` requires `compare_with` to be set")
-                        .with_span(&field.eq_with.as_ref().unwrap().span()),
-                );
-            }
+            field.check_skipped(errors);
         }
     }
 
@@ -405,9 +424,7 @@ impl OrdDerive {
         // Validate fields within each variant
         for variant in variants {
             for field in variant.fields.iter() {
-                if field.skip.is_present() {
-                    check_skipped(field, errors);
-                }
+                field.check_skipped(errors);
             }
         }
 
@@ -415,24 +432,6 @@ impl OrdDerive {
         if self.field_order.is_some() {
             errors.push(
                 Error::custom("`by` attribute is not supported on enums").with_span(&self.ident),
-            );
-        }
-    }
-}
-
-fn check_skipped(field: &OrdField, errors: &mut darling::error::Accumulator) {
-    let fields = [
-        ("order", field.order.is_some()),
-        ("priority", field.priority.is_some()),
-        ("compare_with", field.compare_with.is_some()),
-        ("eq_with", field.eq_with.is_some()),
-        ("none_order", field.none_order.is_some()),
-    ];
-    for (name, attr) in fields {
-        if attr {
-            errors.push(
-                Error::custom(format!("cannot use `{name}` on skipped fields"))
-                    .with_span(&field.skip.span()),
             );
         }
     }
