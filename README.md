@@ -225,10 +225,10 @@ When you skip a trait, dependent traits are automatically skipped:
 | ------------------- | ----------------------------------------------- |
 | (none)              | `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`  |
 | `skip_ord`          | `PartialEq`, `Eq`, `PartialOrd`, `Hash`         |
-| `skip_eq`           | `PartialEq`, `PartialOrd`, `Hash`               |
+| `skip_eq`           | `PartialEq`, `PartialOrd`                       |
 | `skip_partial_ord`  | `PartialEq`, `Eq`, `Hash`                       |
 | `skip_hash`         | `PartialEq`, `Eq`, `PartialOrd`, `Ord`          |
-| `skip_eq, skip_ord` | `PartialEq`, `PartialOrd`, `Hash`               |
+| `skip_eq, skip_ord` | `PartialEq`, `PartialOrd`                       |
 | `skip_partial_eq`   | (none)                                          |
 
 ## License
