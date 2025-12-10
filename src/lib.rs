@@ -152,8 +152,5 @@ pub fn partial_cmp_derive(input: TokenStream) -> TokenStream {
         Err(e) => return e.write_errors().into(),
     };
 
-    match expand_derive(&ord_derive) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => e.write_errors().into(),
-    }
+    expand_derive(&ord_derive).into()
 }

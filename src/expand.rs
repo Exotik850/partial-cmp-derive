@@ -50,7 +50,7 @@ impl FieldAccess<'_> {
 //=============================================================================
 
 /// Expands the derive macro into trait implementations.
-pub fn expand_derive(input: &OrdDerive) -> Result<TokenStream> {
+pub fn expand_derive(input: &OrdDerive) -> TokenStream {
     let config = input.trait_config();
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -59,7 +59,7 @@ pub fn expand_derive(input: &OrdDerive) -> Result<TokenStream> {
 
     if config.partial_eq {
         let partial_eq_impl =
-            expand_partial_eq(input, name, &impl_generics, &ty_generics, where_clause)?;
+            expand_partial_eq(input, name, &impl_generics, &ty_generics, where_clause);
         output.extend(partial_eq_impl);
     }
 
@@ -71,16 +71,16 @@ pub fn expand_derive(input: &OrdDerive) -> Result<TokenStream> {
 
     if config.partial_ord {
         let partial_ord_impl =
-            expand_partial_ord(input, name, &impl_generics, &ty_generics, where_clause)?;
+            expand_partial_ord(input, name, &impl_generics, &ty_generics, where_clause);
         output.extend(partial_ord_impl);
     }
 
     if config.ord {
-        let ord_impl = expand_ord(input, name, &impl_generics, &ty_generics, where_clause)?;
+        let ord_impl = expand_ord(input, name, &impl_generics, &ty_generics, where_clause);
         output.extend(ord_impl);
     }
 
-    Ok(output)
+    output
 }
 
 //=============================================================================
@@ -211,37 +211,48 @@ fn build_option_cmp(access: &FieldAccess, none_order: NoneOrder) -> TokenStream 
 }
 
 /// Chains equality checks with short-circuit AND.
-fn chain_eq_checks(checks: &[TokenStream]) -> TokenStream {
-    match checks.len() {
-        0 => quote! { true },
-        1 => checks[0].clone(),
-        _ => {
-            let first = &checks[0];
-            let rest = &checks[1..];
-            quote! { #first #(&& #rest)* }
-        }
+fn chain_eq_checks(checks: impl IntoIterator<Item = TokenStream>) -> TokenStream {
+    let mut iter = checks.into_iter();
+    if let Some(first) = iter.next() {
+        iter.fold(first, |acc, check| quote! { #acc && #check })
+    } else {
+        quote! { true }
     }
 }
 
 /// Chains comparisons with early return on non-Equal.
-fn chain_cmp_checks(comparisons: &[TokenStream]) -> TokenStream {
-    match comparisons.len() {
-        0 => quote! { ::core::cmp::Ordering::Equal },
-        1 => comparisons[0].clone(),
-        _ => {
-            let mut result = comparisons.last().unwrap().clone();
-            for cmp in comparisons.iter().rev().skip(1) {
-                result = quote! {
-                    match #cmp {
-                        ::core::cmp::Ordering::Equal => #result,
-                        other => other,
-                    }
-                };
+fn chain_cmp_checks(comparisons: impl IntoIterator<Item = TokenStream>) -> TokenStream {
+    let mut iter = comparisons.into_iter();
+    let Some(first) = iter.next() else {
+        return quote! { ::core::cmp::Ordering::Equal };
+    };
+    iter.fold(first, |acc, cmp| {
+        quote! {
+            match #acc {
+                ::core::cmp::Ordering::Equal => #cmp,
+                other => other,
             }
-            result
         }
-    }
+    })
 }
+// fn chain_cmp_checks(comparisons: &[TokenStream]) -> TokenStream {
+//     match comparisons.len() {
+//         0 => quote! { ::core::cmp::Ordering::Equal },
+//         1 => comparisons[0].clone(),
+//         _ => {
+//             let mut result = comparisons.last().unwrap().clone();
+//             for cmp in comparisons.iter().rev().skip(1) {
+//                 result = quote! {
+//                     match #cmp {
+//                         ::core::cmp::Ordering::Equal => #result,
+//                         other => other,
+//                     }
+//                 };
+//             }
+//             result
+//         }
+//     }
+// }
 
 //=============================================================================
 // PartialEq Implementation
@@ -253,113 +264,84 @@ fn expand_partial_eq(
     impl_generics: &syn::ImplGenerics,
     ty_generics: &syn::TypeGenerics,
     where_clause: Option<&syn::WhereClause>,
-) -> Result<TokenStream> {
+) -> TokenStream {
     let eq_body = match &input.data {
-        darling::ast::Data::Struct(fields) => expand_struct_eq(input, fields)?,
-        darling::ast::Data::Enum(variants) => expand_enum_eq(name, variants)?,
+        darling::ast::Data::Struct(fields) => {
+            if let Some(ref order_list) = input.field_order {
+                chain_eq_checks(build_explicit_order_eq_checks(order_list, &fields.fields))
+            } else {
+                chain_eq_checks(build_implicit_eq_checks(&fields.fields))
+            }
+        }
+        darling::ast::Data::Enum(variants) => expand_enum_eq(name, variants),
     };
 
-    Ok(quote! {
+    quote! {
         impl #impl_generics ::core::cmp::PartialEq for #name #ty_generics #where_clause {
             #[inline]
             fn eq(&self, other: &Self) -> bool {
                 #eq_body
             }
         }
-    })
-}
-
-fn expand_struct_eq(input: &OrdDerive, fields: &Fields<OrdField>) -> Result<TokenStream> {
-    let checks = build_struct_eq_checks(input, fields)?;
-    Ok(chain_eq_checks(&checks))
-}
-
-fn build_struct_eq_checks(
-    input: &OrdDerive,
-    fields: &Fields<OrdField>,
-) -> Result<Vec<TokenStream>> {
-    let fields_vec: Vec<_> = fields.iter().cloned().collect();
-
-    if let Some(ref order_list) = input.field_order {
-        build_explicit_order_eq_checks(order_list, &fields_vec)
-    } else {
-        build_implicit_eq_checks(&fields_vec)
     }
 }
 
 fn build_explicit_order_eq_checks(
     order_list: &FieldOrderList,
     fields: &[OrdField],
-) -> Result<Vec<TokenStream>> {
-    let field_map: std::collections::HashMap<String, (usize, &OrdField)> = fields
+) -> impl Iterator<Item = TokenStream> {
+    let field_map: std::collections::HashMap<Ident, (usize, &OrdField)> = fields
         .iter()
         .enumerate()
-        .filter_map(|(i, f)| f.ident.as_ref().map(|id| (id.to_string(), (i, f))))
+        .filter_map(|(i, f)| f.ident.as_ref().map(|id| (id.clone(), (i, f))))
         .collect();
 
-    let mut checks = Vec::new();
-    for entry in &order_list.0 {
-        if let Some(&(idx, field)) = field_map.get(&entry.ident.to_string()) {
+    order_list.0.iter().filter_map(move |entry| {
+        field_map.get(&entry.ident).map(|&(idx, field)| {
             let access = field_access(field, idx);
-            checks.push(build_eq_check(field, &FieldAccess::StructField(&access)));
-        }
-    }
-    Ok(checks)
+            build_eq_check(field, &FieldAccess::StructField(&access))
+        })
+    })
 }
 
-fn build_implicit_eq_checks(fields: &[OrdField]) -> Result<Vec<TokenStream>> {
-    let mut checks = Vec::new();
-    for (idx, field) in fields.iter().enumerate() {
+fn build_implicit_eq_checks(fields: &[OrdField]) -> impl Iterator<Item = TokenStream> + '_ {
+    fields.iter().enumerate().filter_map(move |(idx, field)| {
         if field.skip.is_present() {
-            continue;
-        }
-        let access = field_access(field, idx);
-        checks.push(build_eq_check(field, &FieldAccess::StructField(&access)));
-    }
-    Ok(checks)
-}
-
-fn expand_enum_eq(enum_name: &Ident, variants: &[OrdVariant]) -> Result<TokenStream> {
-    if variants.is_empty() {
-        return Ok(quote! { true });
-    }
-
-    let match_arms = build_enum_eq_arms(enum_name, variants)?;
-
-    Ok(quote! {
-        match (self, other) {
-            #(#match_arms,)*
-            _ => false,
+            None
+        } else {
+            let access = field_access(field, idx);
+            Some(build_eq_check(field, &FieldAccess::StructField(&access)))
         }
     })
 }
 
-fn build_enum_eq_arms(enum_name: &Ident, variants: &[OrdVariant]) -> Result<Vec<TokenStream>> {
-    variants
-        .iter()
-        .map(|v| build_variant_eq_arm(enum_name, v))
-        .collect()
+fn expand_enum_eq(enum_name: &Ident, variants: &[OrdVariant]) -> TokenStream {
+    if variants.is_empty() {
+        return quote! { true };
+    }
+
+    let match_arms = variants.iter().map(|v| build_variant_eq_arm(enum_name, v));
+
+    quote! {
+        match (self, other) {
+            #(#match_arms,)*
+            _ => false,
+        }
+    }
 }
 
-fn build_variant_eq_arm(enum_name: &Ident, variant: &OrdVariant) -> Result<TokenStream> {
+fn build_variant_eq_arm(enum_name: &Ident, variant: &OrdVariant) -> TokenStream {
     let (self_pat, other_pat, bindings) = build_variant_patterns(enum_name, variant);
-    let fields_vec: Vec<_> = variant.fields.iter().cloned().collect();
-
-    let checks = build_binding_eq_checks(&fields_vec, &bindings);
-    let eq_expr = chain_eq_checks(&checks);
-
-    Ok(quote! { (#self_pat, #other_pat) => { #eq_expr } })
-}
-
-fn build_binding_eq_checks(fields: &[OrdField], bindings: &[(Ident, Ident)]) -> Vec<TokenStream> {
-    fields
+    let checks = variant
+        .fields
         .iter()
-        .zip(bindings)
+        .zip(bindings.iter())
         .filter(|(f, _)| !f.skip.is_present())
         .map(|(field, (self_id, other_id))| {
             build_eq_check(field, &FieldAccess::Bindings { self_id, other_id })
-        })
-        .collect()
+        });
+    let eq_expr = chain_eq_checks(checks);
+    quote! { (#self_pat, #other_pat) => { #eq_expr } }
 }
 
 //=============================================================================
@@ -372,31 +354,31 @@ fn expand_partial_ord(
     impl_generics: &syn::ImplGenerics,
     ty_generics: &syn::TypeGenerics,
     where_clause: Option<&syn::WhereClause>,
-) -> Result<TokenStream> {
+) -> TokenStream {
     let config = input.trait_config();
 
     if config.ord {
-        return Ok(quote! {
+        return quote! {
             impl #impl_generics ::core::cmp::PartialOrd for #name #ty_generics #where_clause {
                 #[inline]
                 fn partial_cmp(&self, other: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
                     ::core::option::Option::Some(::core::cmp::Ord::cmp(self, other))
                 }
             }
-        });
+        };
     }
 
-    let cmp_body = build_cmp_body(input)?;
+    let cmp_body = build_cmp_body(input);
     let final_cmp = apply_reverse(input, cmp_body);
 
-    Ok(quote! {
+    quote! {
         impl #impl_generics ::core::cmp::PartialOrd for #name #ty_generics #where_clause {
             #[inline]
             fn partial_cmp(&self, other: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
                 ::core::option::Option::Some(#final_cmp)
             }
         }
-    })
+    }
 }
 
 //=============================================================================
@@ -409,23 +391,29 @@ fn expand_ord(
     impl_generics: &syn::ImplGenerics,
     ty_generics: &syn::TypeGenerics,
     where_clause: Option<&syn::WhereClause>,
-) -> Result<TokenStream> {
-    let cmp_body = build_cmp_body(input)?;
+) -> TokenStream {
+    let cmp_body = build_cmp_body(input);
     let final_cmp = apply_reverse(input, cmp_body);
 
-    Ok(quote! {
+    quote! {
         impl #impl_generics ::core::cmp::Ord for #name #ty_generics #where_clause {
             #[inline]
             fn cmp(&self, other: &Self) -> ::core::cmp::Ordering {
                 #final_cmp
             }
         }
-    })
+    }
 }
 
-fn build_cmp_body(input: &OrdDerive) -> Result<TokenStream> {
+fn build_cmp_body(input: &OrdDerive) -> TokenStream {
     match &input.data {
-        darling::ast::Data::Struct(fields) => expand_struct_cmp(input, fields),
+        darling::ast::Data::Struct(fields) => {
+            if let Some(ref order_list) = input.field_order {
+                chain_cmp_checks(build_explicit_order_cmp_checks(order_list, &fields.fields))
+            } else {
+                chain_cmp_checks(build_implicit_cmp_checks(&fields.fields))
+            }
+        }
         darling::ast::Data::Enum(variants) => expand_enum_cmp(input, variants),
     }
 }
@@ -442,81 +430,51 @@ fn apply_reverse(input: &OrdDerive, cmp_body: TokenStream) -> TokenStream {
 // Struct Comparison
 //=============================================================================
 
-fn expand_struct_cmp(input: &OrdDerive, fields: &Fields<OrdField>) -> Result<TokenStream> {
-    let comparisons = build_struct_cmp_checks(input, fields)?;
-    Ok(chain_cmp_checks(&comparisons))
-}
-
-fn build_struct_cmp_checks(
-    input: &OrdDerive,
-    fields: &Fields<OrdField>,
-) -> Result<Vec<TokenStream>> {
-    let fields_vec: Vec<_> = fields.iter().cloned().collect();
-
-    if let Some(ref order_list) = input.field_order {
-        build_explicit_order_cmp_checks(order_list, &fields_vec)
-    } else {
-        build_implicit_cmp_checks(&fields_vec)
-    }
-}
-
 fn build_explicit_order_cmp_checks(
     order_list: &FieldOrderList,
     fields: &[OrdField],
-) -> Result<Vec<TokenStream>> {
-    let field_map: std::collections::HashMap<String, (usize, &OrdField)> = fields
+) -> impl Iterator<Item = TokenStream> {
+    let field_map: std::collections::HashMap<Ident, (usize, &OrdField)> = fields
         .iter()
         .enumerate()
-        .filter_map(|(i, f)| f.ident.as_ref().map(|id| (id.to_string(), (i, f))))
+        .filter_map(|(i, f)| f.ident.as_ref().map(|id| (id.clone(), (i, f))))
         .collect();
 
-    let mut comparisons = Vec::new();
-    for entry in &order_list.0 {
-        if let Some(&(idx, field)) = field_map.get(&entry.ident.to_string()) {
+    order_list.0.iter().filter_map(move |entry| {
+        field_map.get(&entry.ident).map(|&(idx, field)| {
             let access = field_access(field, idx);
-            comparisons.push(build_cmp_check(
-                field,
-                &FieldAccess::StructField(&access),
-                entry.order,
-            ));
-        }
-    }
-    Ok(comparisons)
+            build_cmp_check(field, &FieldAccess::StructField(&access), entry.order)
+        })
+    })
 }
 
-fn build_implicit_cmp_checks(fields: &[OrdField]) -> Result<Vec<TokenStream>> {
+fn build_implicit_cmp_checks(fields: &[OrdField]) -> impl Iterator<Item = TokenStream> + '_ {
     let sorted = sorted_field_indices(fields);
-
-    let comparisons = sorted
-        .into_iter()
-        .map(|(idx, field)| {
-            let access = field_access(field, idx);
-            build_cmp_check(
-                field,
-                &FieldAccess::StructField(&access),
-                field.effective_order(),
-            )
-        })
-        .collect();
-
-    Ok(comparisons)
+    sorted.into_iter().map(|(idx, field)| {
+        let access = field_access(field, idx);
+        build_cmp_check(
+            field,
+            &FieldAccess::StructField(&access),
+            field.effective_order(),
+        )
+    })
 }
 
 //=============================================================================
 // Enum Comparison
 //=============================================================================
 
-fn expand_enum_cmp(input: &OrdDerive, variants: &[OrdVariant]) -> Result<TokenStream> {
+fn expand_enum_cmp(input: &OrdDerive, variants: &[OrdVariant]) -> TokenStream {
     if variants.is_empty() {
-        return Ok(quote! { ::core::cmp::Ordering::Equal });
+        return quote! { ::core::cmp::Ordering::Equal };
     }
 
     let enum_name = &input.ident;
     let variant_ranks = compute_variant_ranks(variants);
-    let match_arms = build_enum_cmp_arms(enum_name, variants)?;
+    let match_arms = variants.iter().map(|v| build_variant_cmp_arm(enum_name, v));
     let discriminant_fn = build_discriminant_fn(enum_name, variants, &variant_ranks);
 
-    Ok(quote! {
+    quote! {
         {
             #discriminant_fn
 
@@ -532,7 +490,7 @@ fn expand_enum_cmp(input: &OrdDerive, variants: &[OrdVariant]) -> Result<TokenSt
                 }
             }
         }
-    })
+    }
 }
 
 fn compute_variant_ranks(variants: &[OrdVariant]) -> std::collections::HashMap<String, usize> {
@@ -546,21 +504,13 @@ fn compute_variant_ranks(variants: &[OrdVariant]) -> std::collections::HashMap<S
         .collect()
 }
 
-fn build_enum_cmp_arms(enum_name: &Ident, variants: &[OrdVariant]) -> Result<Vec<TokenStream>> {
-    variants
-        .iter()
-        .map(|v| build_variant_cmp_arm(enum_name, v))
-        .collect()
-}
-
-fn build_variant_cmp_arm(enum_name: &Ident, variant: &OrdVariant) -> Result<TokenStream> {
+fn build_variant_cmp_arm(enum_name: &Ident, variant: &OrdVariant) -> TokenStream {
     let (self_pat, other_pat, bindings) = build_variant_patterns(enum_name, variant);
-    let fields_vec: Vec<_> = variant.fields.iter().cloned().collect();
 
-    let comparisons = build_binding_cmp_checks(&fields_vec, &bindings);
-    let cmp_expr = chain_cmp_checks(&comparisons);
+    let comparisons = build_binding_cmp_checks(&variant.fields.fields, &bindings);
+    let cmp_expr = chain_cmp_checks(comparisons);
 
-    Ok(quote! { (#self_pat, #other_pat) => { #cmp_expr } })
+    quote! { (#self_pat, #other_pat) => { #cmp_expr } }
 }
 
 fn build_binding_cmp_checks(fields: &[OrdField], bindings: &[(Ident, Ident)]) -> Vec<TokenStream> {
