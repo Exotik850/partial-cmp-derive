@@ -64,6 +64,7 @@ pub fn expand_derive(input: &OrdDerive) -> TokenStream {
 
     if config.eq {
         output.extend(quote! {
+            #[automatically_derived]
             impl #impl_generics ::core::cmp::Eq for #name #ty_generics #where_clause {}
         });
     }
@@ -276,6 +277,7 @@ fn expand_partial_eq(
     };
 
     quote! {
+        #[automatically_derived]
         impl #impl_generics ::core::cmp::PartialEq for #name #ty_generics #where_clause {
             #[inline]
             fn eq(&self, other: &Self) -> bool {
@@ -358,6 +360,7 @@ fn expand_partial_ord(
 
     if config.ord {
         return quote! {
+            #[automatically_derived]
             impl #impl_generics ::core::cmp::PartialOrd for #name #ty_generics #where_clause {
                 #[inline]
                 fn partial_cmp(&self, other: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
@@ -371,6 +374,7 @@ fn expand_partial_ord(
     let final_cmp = apply_reverse(input, cmp_body);
 
     quote! {
+        #[automatically_derived]
         impl #impl_generics ::core::cmp::PartialOrd for #name #ty_generics #where_clause {
             #[inline]
             fn partial_cmp(&self, other: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
@@ -395,6 +399,7 @@ fn expand_ord(
     let final_cmp = apply_reverse(input, cmp_body);
 
     quote! {
+        #[automatically_derived]
         impl #impl_generics ::core::cmp::Ord for #name #ty_generics #where_clause {
             #[inline]
             fn cmp(&self, other: &Self) -> ::core::cmp::Ordering {
