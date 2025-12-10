@@ -155,8 +155,8 @@ pub struct OrdField {
     /// Custom comparison function path for Ord (returns Ordering).
     pub compare_with: Option<SpannedValue<Path>>,
 
-    /// Custom equality function path for PartialEq (returns bool).
-    /// If not specified but compare_with is, equality is derived from compare_with.
+    /// Custom equality function path for `PartialEq` (returns bool).
+    /// If not specified but `compare_with` is, equality is derived from `compare_with`.
     pub eq_with: Option<SpannedValue<Path>>,
 
     /// How to handle None values for Option fields.
@@ -201,11 +201,11 @@ impl OrdVariant {
 /// Configuration for which traits to generate.
 #[derive(Debug, Clone, Default)]
 pub struct TraitConfig {
-    /// Generate PartialEq implementation.
+    /// Generate `PartialEq` implementation.
     pub partial_eq: bool,
     /// Generate Eq implementation.
     pub eq: bool,
-    /// Generate PartialOrd implementation.
+    /// Generate `PartialOrd` implementation.
     pub partial_ord: bool,
     /// Generate Ord implementation.
     pub ord: bool,
@@ -240,7 +240,7 @@ pub struct OrdDerive {
     #[darling(default)]
     pub reverse: Flag,
 
-    /// Skip PartialEq implementation.
+    /// Skip `PartialEq` implementation.
     #[darling(default)]
     pub skip_partial_eq: Flag,
 
@@ -248,7 +248,7 @@ pub struct OrdDerive {
     #[darling(default)]
     pub skip_eq: Flag,
 
-    /// Skip PartialOrd implementation.
+    /// Skip `PartialOrd` implementation.
     #[darling(default)]
     pub skip_partial_ord: Flag,
 

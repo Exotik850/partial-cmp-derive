@@ -1,6 +1,5 @@
 //! Code generation for the `PartialCmpDerive` macro.
 
-use darling::{Result, ast::Fields};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
