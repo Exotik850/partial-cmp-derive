@@ -99,10 +99,11 @@ mod types;
 
 use darling::FromDeriveInput;
 use proc_macro::TokenStream;
+
 use syn::{DeriveInput, parse_macro_input};
 
-use crate::expand::expand_derive;
-use crate::types::OrdDerive;
+use expand::cmp::expand_derive;
+use types::OrdDerive;
 
 /// Derives comparison and hash traits with customizable field behavior.
 ///
